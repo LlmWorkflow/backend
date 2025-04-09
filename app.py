@@ -1,51 +1,44 @@
-from flask import Flask, request, jsonify
+from flask import Flask
+from flask_socketio import SocketIO, emit
 from langchain_community.llms import Ollama
-import time
 
-stablelm2 = Ollama(model="stablelm2:1.6b", base_url="http://10.200.1.45:11434")
-qwen2 = Ollama(model="qwen2:7b", base_url="http://10.200.1.45:11434")
-llama3 = Ollama(model="llama3:latest", base_url="http://10.200.1.45:11434")
+stablelm2 = Ollama(model="stablelm2:1.6b", base_url="http://10.200.1.44:11434")
+qwen2 = Ollama(model="qwen2:0.5b", base_url="http://10.200.1.44:11434")
+deepseek = Ollama(model="deepseek-r1:1.5b", base_url="http://10.200.1.44:11434")
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-@app.route('/translate', methods=['POST'])
-def translate():
-    data = request.json  # 接收前端发送的 JSON 数据
-    quest = data.get('text', '你好，请帮我用西班牙语翻译:"今天天气真好"')
 
-    total_start_time = time.time()
+@socketio.on('translate')
+def handle_translate(data):
 
-    # 调用Qwen2模型
-    start_time = time.time()
-    res_qwen2 = qwen2.invoke(f"请将以下语句翻译为英文，请仅仅输出英文翻译, 问：{quest}，答：")
-    end_time = time.time()
-    qwen2_time = end_time - start_time
+    def process_stage(stage, model, prompt):
+        emit('stage_start', {'stage': stage})
 
-    # 调用StableLM2模型
-    start_time = time.time()
-    res_stablelm2 = stablelm2.invoke(f"Please translate the following statements into Spanish：Q：{res_qwen2}, A：")
-    end_time = time.time()
-    stablelm2_time = end_time - start_time
+        result = model.invoke(prompt)
 
-    # 调用Llama3模型
-    start_time = time.time()
-    res_llama3 = llama3.invoke(f"请将以下内容的答案部分采用西班牙语，其他部分采用中文：{res_stablelm2}")
-    end_time = time.time()
-    llama3_time = end_time - start_time
+        emit('stage_result', {
+            'stage': stage,
+            'result': result
+        })
+        return result
 
-    total_end_time = time.time()
-    total_time = total_end_time - total_start_time
+    try:
+        # 分阶段处理
+        res1 = process_stage('qwen2', qwen2, f"翻译为英文: {data['text']}")
+        res2 = process_stage('stablelm2', stablelm2, f"Translate to Spanish: {res1},only export the translation")
+        res3 = process_stage('deepseek', deepseek, f"请将以下内容的答案部分保留西班牙语，其他部分翻译为中文： {res2}")
 
-    # 返回 JSON 响应
-    return jsonify({
-        "qwen2_result": res_qwen2,
-        "stablelm2_result": res_stablelm2,
-        "llama3_result": res_llama3,
-        "qwen2_time": qwen2_time,
-        "stablelm2_time": stablelm2_time,
-        "llama3_time": llama3_time,
-        "total_time": total_time
-    })
+        emit('complete', {
+            'final_result': res3
+        })
+
+    except Exception as e:
+        emit('error', {
+            'message': f"处理失败: {str(e)}",
+        })
+
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000,allow_unsafe_werkzeug=True)
